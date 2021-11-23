@@ -22,7 +22,7 @@ int main(void)
         // String
         "\"Hello World\"",
         "\"Escape\\nTest\"",
-        "\"Unicode: \\u0041\" (prints 'A')",
+        "\"Unicode: \\u0041 (prints 'A')\"",
         // Array
         "[\"Ford\", \"BMW\", \"Fiat\"]",
         "[1,0.1,\"string\",null,true]",
