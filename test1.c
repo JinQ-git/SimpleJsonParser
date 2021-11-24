@@ -39,6 +39,7 @@ int main(void)
         "0012.12",            // Number Parsing Error
         "False",              // Capital Letter
         "\"Hello\\\" World",  // not close double quote
+        "\"\\uasdf\"",        // unicode error
         "{'a':1}",            // not allow single quote
         "[1,2,]",             // comma
         "{\"a\":1,}",         // comma
@@ -50,11 +51,16 @@ int main(void)
     int LENGTH = sizeof(JSON_STRINGS) / sizeof(JSON_STRINGS[0]);
 
     Element rootElement = { 0, };
+    JsonErrorInfo info = { 0, };
+
     for(int i = 0; i < LENGTH; i++) {
         printf("Test %d: %s\n", i, JSON_STRINGS[i]);
         printf("-------------------------------------------------\n");
-        if( !jsonParser( &rootElement, JSON_STRINGS[i]) ) {
+        if( parseJsonString( &rootElement, JSON_STRINGS[i], &info) == JPE_NO_ERROR ) {
             printElementDepthAll( &rootElement );
+        }
+        else {
+            printJsonErrorInfo( &info, JSON_STRINGS[i] );
         }
         resetElement(&rootElement);
         printf("-------------------------------------------------\n");

@@ -53,15 +53,13 @@ int main(void)
 
     // Start parse Here!!
     Element rootElement = { 0, };
-    int resultCode = jsonParser( &rootElement, fileContents );
-
-    // return 0 if success
-    if( !resultCode ) {
+    JsonParsingError ret = parseJsonString( &rootElement, fileContents, NULL );
+    if( ret == JPE_NO_ERROR ) {
         printElementDepthAll( &rootElement );
     }
 
     free(fileContents);
     resetElement(&rootElement);
-    return resultCode;
+    return (int)ret;
 }
 

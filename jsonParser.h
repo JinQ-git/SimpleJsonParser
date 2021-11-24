@@ -7,6 +7,25 @@
 
 typedef enum
 {
+    // System Error
+    JPE_OUT_OF_MEMORY = -1,
+    // No Error
+    JPE_NO_ERROR = 0,
+    // Syntax Error (Unexpected Token)
+    JPE_SYNTAX_ERROR                = 100, // Unexpected Token
+    JPE_SYNTAX_ERROR_END            = 101, // End of string while parsing
+    JPE_SYNTAX_ERROR_STRING_ESCAPE  = 110, // Invalid Escape Character
+    JPE_SYNTAX_ERROR_UNICODE_ESCAPE = 111, // Invalid Unicode Character after \u
+    JPE_SYNTAX_ERROR_ARRAY          = 120, // Unexpected Token while parsing array
+    JPE_SYNTAX_ERROR_ARRAY_COMMA    = 121, // Missing Comma?
+    JPE_SYNTAX_ERROR_OBJECT         = 130, // Unexpected Token while parsing object
+    JPE_SYNTAX_ERROR_OBJECT_KEY     = 131, // Invalid Object Key
+    JPE_SYNTAX_ERROR_OBJECT_COLON   = 132, // Missing Colon?
+    JPE_SYNTAX_ERROR_OBJECT_COMMA   = 133  // Missing Comma?
+} JsonParsingError;
+
+typedef enum
+{
     TYPE_NULL        = 0,
     TYPE_OBJECT      = 1,
     TYPE_ARRAY       = 2,
@@ -44,21 +63,20 @@ typedef struct tagArrayNode
     struct tagArrayNode *next;
 } ArrayNode;
 
-//
-// Main Function of Json Parser
-//
-int jsonParser(Element *pOutElement, const char *jsonStr);
+typedef struct tagJsonErrorInfo
+{
+    JsonParsingError error;
+    int              line;     // line number start from 1
+    int              column;   // column number start from 1
+    int              position; // zero-based byte index
+} JsonErrorInfo;
 
 //
-// Parsing Functions
+// Main Function of Json Parser
+// ** Input Josn String must be UTF-8 Encoded Text
+// ** pOutErrorInfo can be `NULL`, if do not need any error information.
 //
-const char *parseValue(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseObject(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseString(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseNumber(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseBoolean(const char *pCurrChar, const char **pEnd, Element *pElement);
-const char *parseNull(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseJsonString(Element *pOutElement, const char *jsonStr, JsonErrorInfo *pOutErrorInfo);
 
 //
 // Release Element
@@ -71,5 +89,10 @@ void resetElement(Element *pElement);
 void printElementSimple(const Element *pElement);
 void printElementDepth1(const Element *pElement);
 void printElementDepthAll(const Element *pElement);
+
+//
+// Print Error
+//
+void printJsonErrorInfo(const JsonErrorInfo* pInfo, const char *jsonStr);
 
 #endif // _JSON_ELEMENT_H_

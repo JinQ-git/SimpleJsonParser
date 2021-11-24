@@ -7,55 +7,71 @@
 #include <float.h> // DBL_EPSILON
 
 //
-// Main Function of Json Parser
+// Parsing Functions (Trim Left is required)
 //
-int jsonParser(Element *pOutElement, const char *jsonStr)
+JsonParsingError parseValue(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseObject(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseArray(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseString(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseNumber(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseBoolean(const char *pCurrChar, const char **pEnd, Element *pElement);
+JsonParsingError parseNull(const char *pCurrChar, const char **pEnd, Element *pElement);
+
+// Calculate Error Location for Debug?
+static void _errorLocation( JsonErrorInfo *pOut, const char *startPos, const char *endPos )
 {
-    const char *pCurrChar = jsonStr;
-    int resultCode = 0;
+    int ln  = 1;
+    int col = 1;
 
-    while( *pCurrChar ) 
-    {
-        const char *pEnd = (const char *)0;
-        if( !parseValue( pCurrChar, &pEnd, pOutElement ) ) {
-            resultCode = -1;
-            break;
+    for( const char *currPos = startPos; currPos <= endPos; currPos++ ) {
+        if( *currPos == '\n' ) {
+            ++ln;    // add line number
+            col = 1; // reset column number
         }
-
-        if( pEnd ) {
-            while( isspace( *pEnd ) ) { pEnd++; }
-            if( *pEnd ) {
-                if( *pEnd == ',' || *pEnd == ';' )
-                {
-                    const char* pTmp = pEnd;
-                    pEnd++;
-                    while( isspace( *pEnd ) ) { pEnd++; }
-                    if( *pEnd ) {
-                        pCurrChar = pEnd;
-                        resetElement( pOutElement );
-                        continue;
-                    }
-                    else if( *pTmp == ';' ) {
-                        break; // Parsing Done
-                    }
-                    else { // *pTmp == ','
-                        fprintf(stderr, "Unexpected Token Character ','\n");
-                        resultCode = -1;
-                        break;
-                    }
-                }
-                else
-                {
-                    fprintf(stderr, "Unknown Token Character after Parsing: %c\n", *pCurrChar);
-                    resultCode = -1;
-                    break;
-                }
-            }
-            else { break; } // Parsing Done
+        else if( (((unsigned char)*currPos) & 0xC0) != 0x80 ) {
+            ++col;
         }
+        // else // 10xxxxxx xxxxxxxx -> ignore
     }
 
-    return resultCode;
+    pOut->line = ln;
+    pOut->column = col;
+    pOut->position = (int)(endPos - startPos);
+}
+
+//
+// Main Function of Json Parser
+//
+JsonParsingError parseJsonString(Element *pOutElement, const char *jsonStr, JsonErrorInfo* pOutErrorInfo)
+{
+    JsonParsingError ret = JPE_NO_ERROR;
+    const char *pCurrChar = jsonStr;
+    const char *pEnd = (const char *)0;
+    
+    if( pOutElement && pCurrChar && *pCurrChar )
+    {
+        ret = parseValue( pCurrChar, &pEnd, pOutElement );
+        if( ret == JPE_NO_ERROR ) {
+            pCurrChar = pEnd;
+            while( isspace( *pCurrChar ) ) { pCurrChar++; }
+            if( *pCurrChar ) { 
+                pEnd = pCurrChar;
+                ret = JPE_SYNTAX_ERROR;
+            }
+        }
+        // else {
+        //     if( *pEnd == '\0' && ret != JPE_SYNTAX_ERROR_END ) {
+        //         ret = JPE_SYNTAX_ERROR_END;
+        //     }
+        // }
+    }
+
+    if( pOutErrorInfo ) {
+        pOutErrorInfo->error = ret;
+        _errorLocation( pOutErrorInfo, jsonStr, pEnd );
+    }
+    
+    return ret;
 }
 
 static int hex2int(char hexCode)
@@ -67,19 +83,19 @@ static int hex2int(char hexCode)
     return 0;
 }
 
-static char *_getString(const char *pCurrChar, const char ** pEnd)
+JsonParsingError _getString(char **pOutString, const char *pCurrChar, const char ** ppEnd)
 {
     const char *pTmp = pCurrChar + 1;
     int charCount = 0;
     char *stringValue = (char *)0;
 
-    // Standard not allow single quote
+    // Not allow single quote string
     if( *pCurrChar != '"' ) { 
-        if( pEnd ) { *pEnd = pCurrChar; }
-        return (char *)0; 
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
     }
 
-    // Count Total Characters
+    // Count Total Characters (utf-8)
     while( *pTmp )
     {
         if( *pTmp == '\\') {
@@ -96,9 +112,8 @@ static char *_getString(const char *pCurrChar, const char ** pEnd)
                     break;
                 case 'u': // Convert UTF-16 to UTF-8
                     if( !isxdigit(pTmp[1]) || !isxdigit(pTmp[2]) || !isxdigit(pTmp[3]) || !isxdigit(pTmp[4]) ) {
-                        fprintf(stderr, "Unexpected Token after '\\u': No Hex Digit: %c%c%c%c\n", pTmp[1], pTmp[2], pTmp[3], pTmp[4]);
-                        if( pEnd ) { *pEnd = pTmp; }
-                        return (char *)0;
+                        *ppEnd = pTmp;
+                        return JPE_SYNTAX_ERROR_UNICODE_ESCAPE;
                     }
                     pTmp += 4;
                     // Calculate Bytes of UTF-8 Conversion
@@ -106,10 +121,12 @@ static char *_getString(const char *pCurrChar, const char ** pEnd)
                     else if( pTmp[2] > '0' || pTmp[3] > '7' ) { charCount += 1; }  // 0x0080 ~ 0x07FF
                     // else // 0x0000 ~ 0x007F
                     break;
+                case '\0':
+                    *ppEnd = pTmp;
+                    return JPE_SYNTAX_ERROR_END;
                 default:
-                    fprintf(stderr, "Unexpected Token after '\\': %c\n", *pTmp);
-                    if( pEnd ) { *pEnd = pTmp; }
-                    return (char *)0;
+                    *ppEnd = pTmp;
+                    return JPE_SYNTAX_ERROR_STRING_ESCAPE;
             }
         }
         else if( *pTmp == '"' ) { // End of String
@@ -118,12 +135,12 @@ static char *_getString(const char *pCurrChar, const char ** pEnd)
         pTmp++;
         charCount++;
     }
+    if( *pTmp != '"' ) { return JPE_SYNTAX_ERROR_END; }
 
     stringValue = (char *)calloc(charCount + 1, sizeof(char));
     if( !stringValue ) {
-        fprintf(stderr, "Critical Error: String Allocation Failed...\n");
-        if( pEnd ) { *pEnd = pTmp + 1; }
-        return (char *)0;
+        *ppEnd = pTmp + 1;
+        return JPE_OUT_OF_MEMORY;
     }
 
     // Copy String
@@ -169,11 +186,12 @@ static char *_getString(const char *pCurrChar, const char ** pEnd)
         }
     }
 
-    if( pEnd ) { *pEnd = (pTmp + 1); }
-    return stringValue;
+    *ppEnd = pTmp + 1;
+    *pOutString = stringValue;
+    return JPE_NO_ERROR;
 }
 
-const char *parseValue(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseValue(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     // Trim Left
     while( isspace(*pCurrChar) ) { pCurrChar++; }
@@ -181,11 +199,11 @@ const char *parseValue(const char *pCurrChar, const char **pEnd, Element *pEleme
     switch( *pCurrChar ) 
     {
         // Try parse as Object
-        case '{': return parseObject( pCurrChar, pEnd, pElement );
+        case '{': return parseObject( pCurrChar, ppEnd, pElement );
         // Try parse as Array
-        case '[': return parseArray( pCurrChar, pEnd, pElement );
+        case '[': return parseArray( pCurrChar, ppEnd, pElement );
         // Try parse as String
-        case '"': return parseString( pCurrChar, pEnd, pElement );
+        case '"': return parseString( pCurrChar, ppEnd, pElement );
         // Try parse as Number (Octal, Decimal, Hex Integer and Floating Point)
         case '+':
         case '-': 
@@ -199,29 +217,31 @@ const char *parseValue(const char *pCurrChar, const char **pEnd, Element *pEleme
         case '7':
         case '8':
         case '9': 
-            return parseNumber( pCurrChar, pEnd, pElement );
+            return parseNumber( pCurrChar, ppEnd, pElement );
         // Try parse as Boolean
         case 't':
         case 'f': 
-            return parseBoolean( pCurrChar, pEnd, pElement );
+            return parseBoolean( pCurrChar, ppEnd, pElement );
         // Try parse as Null
         case 'n':
-            return parseNull( pCurrChar, pEnd, pElement );
+            return parseNull( pCurrChar, ppEnd, pElement );
+        // End of String
+        case '\0':
+            *ppEnd = pCurrChar;
+            return JPE_SYNTAX_ERROR_END;
 
         default: break; // Token Error
     }
 
-    fprintf(stderr, "Token Character Error: %c\n", *pCurrChar);
-    if( pEnd ) { *pEnd = pCurrChar; }
-
-    return (const char *)0;
+    *ppEnd = pCurrChar;
+    return JPE_SYNTAX_ERROR;
 }
 
-const char *parseObject(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseObject(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     if( *pCurrChar != '{' ) { 
-        if( pEnd ) { *pEnd = pCurrChar; }
-        return (const char *)0; 
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
     }
     pCurrChar++;
 
@@ -233,110 +253,99 @@ const char *parseObject(const char *pCurrChar, const char **pEnd, Element *pElem
     while( isspace(*pCurrChar) ) { pCurrChar++; }
     if( *pCurrChar == '}' ) {
         // Empty Object
-        if( pEnd ) { *pEnd = pCurrChar + 1; }
+        *ppEnd = pCurrChar + 1;
         pElement->type = TYPE_OBJECT;
         pElement->objectValue = (ObjectNode *)0;
-        return pCurrChar + 1;
+        return JPE_NO_ERROR;
     }
 
-    for(;;) {
-        // Parsing Object
-        if( *pCurrChar == '"' )
-        {
-            // Get Key
-            char *keyString = _getString(pCurrChar, &ptrEnd);
-            if( !keyString ) { 
-                if( pEnd ) { *pEnd = ptrEnd; }
-                return (const char *)0; 
-            }
+    for(;;) 
+    {
+        // Get Key
+        char *keyString = (char *)0;
+        JsonParsingError ret = _getString(&keyString, pCurrChar, &ptrEnd);
+        if( ret != JPE_NO_ERROR ) {
+            if( ret == JPE_OUT_OF_MEMORY ) { return ret; }
+            // String Parse Error -> No String for Key
+            *ppEnd = ptrEnd;
+            return JPE_SYNTAX_ERROR_OBJECT_KEY;
+        }
 
-            pCurrChar = ptrEnd;
-            while( isspace(*pCurrChar) ) { pCurrChar++; }
-            if( *pCurrChar != ':' ) {
-                free(keyString);
-                fprintf(stderr, "Object Prasing Error: Unexpected Token Character: %c... ( ':' is required )\n", *pCurrChar);
-                if( pEnd ) { *pEnd = pCurrChar; }
-                return (const char *)0;
-            }
-            else { 
-                ++pCurrChar; 
-                while( isspace(*pCurrChar) ) { pCurrChar++; }
-            }
+        pCurrChar = ptrEnd;
+        while( isspace(*pCurrChar) ) { pCurrChar++; }
+        if( *pCurrChar != ':' ) {
+            free(keyString);
+            *ppEnd = pCurrChar;
+            return (*pCurrChar == '\0') ? JPE_SYNTAX_ERROR_END : JPE_SYNTAX_ERROR_OBJECT_COLON;
+        }
+        ++pCurrChar; 
+        while( isspace(*pCurrChar) ) { pCurrChar++; }
 
-            // Allocate Element
-            ObjectNode *pNode = (ObjectNode *)calloc(1, sizeof(ObjectNode));
-            if( !pNode ) {
-                fprintf(stderr, "Critical Error: Memory Allocation Failed\n");
-                free(keyString);
-                if( pHead ) { // Release
-                    Element e = { .type = TYPE_OBJECT, .objectValue = pHead };
-                    resetElement( &e );
-                }
-                if( pEnd ) { *pEnd = pCurrChar; }
-                return (const char *)0;
+        // Allocate Element
+        ObjectNode *pNode = (ObjectNode *)calloc(1, sizeof(ObjectNode));
+        if( !pNode ) {
+            free(keyString);
+            if( pHead ) { // Release
+                Element e = { .type = TYPE_OBJECT, .objectValue = pHead };
+                resetElement( &e );
             }
-            else {
-                pNode->key = keyString;
-                if( pTail ) {
-                    pTail->next = pNode;
-                    pTail = pNode;
-                }
-                else {
-                    pHead = pNode;
-                    pTail = pNode;
-                }
-            }
-            
-            // Parse Value Here!!
-            const char *ret = parseValue( pCurrChar, &ptrEnd, &(pNode->element) );
-            if( !ret ) {
-                if( pHead ) { // Release
-                    Element e = { .type = TYPE_OBJECT, .objectValue = pHead };
-                    resetElement( &e );
-                }
-                if( pEnd ) { *pEnd = ptrEnd; }
-                return (const char *)0;
-            }
-            pCurrChar = ptrEnd;
-
-            // Check "," or "}"
-            while( isspace(*pCurrChar) ) { pCurrChar++; }
-            if( *pCurrChar == ',' ) {
-                pCurrChar++;
-                while( isspace(*pCurrChar) ) { pCurrChar++; }
-                continue;
-            }
-            else if( *pCurrChar == '}' ) {
-                // Parsing Done
-                pCurrChar++;
-                break;
-            }
-            else {
-                fprintf(stderr, "Object Parsing Error: Unexpected Token Character: %c...\n", *pCurrChar );
-                if( pEnd ) { *pEnd = pCurrChar; }
-                return (const char*)0;
-            }
-
+            *ppEnd = pCurrChar;
+            return JPE_OUT_OF_MEMORY;
         }
         else {
-            fprintf(stderr, "Object Parsing Error: Unexpected Token Character: %c...\n", *pCurrChar );
-            if( pEnd ) { *pEnd = pCurrChar; }
-            return (const char*)0;
+            pNode->key = keyString;
+            if( pTail ) {
+                pTail->next = pNode;
+                pTail = pNode;
+            }
+            else {
+                pHead = pNode;
+                pTail = pNode;
+            }
+        }
+        
+        // Parse Value Here!!
+        ret = parseValue( pCurrChar, &ptrEnd, &(pNode->element) );
+        if( ret != JPE_NO_ERROR ) {
+            if( pHead ) { // Release
+                Element e = { .type = TYPE_OBJECT, .objectValue = pHead };
+                resetElement( &e );
+            }
+            *ppEnd = ptrEnd;
+            return ret == JPE_SYNTAX_ERROR_END ? ret : JPE_SYNTAX_ERROR_OBJECT;
+        }
+        pCurrChar = ptrEnd;
+
+        // Check "," or "}"
+        while( isspace(*pCurrChar) ) { pCurrChar++; }
+        if( *pCurrChar == ',' ) {
+            pCurrChar++;
+            while( isspace(*pCurrChar) ) { pCurrChar++; }
+            continue;
+        }
+        else if( *pCurrChar == '}' ) {
+            // Parsing Done
+            pCurrChar++;
+            break;
+        }
+        else {
+            *ppEnd = pCurrChar; 
+            return (*pCurrChar == '\0') ? JPE_SYNTAX_ERROR_END : JPE_SYNTAX_ERROR_OBJECT_COMMA;
         }
     }
 
     pElement->type = TYPE_OBJECT;
     pElement->objectValue = pHead;
-    if( pEnd ) { *pEnd = pCurrChar; }
+    *ppEnd = pCurrChar;
 
-    return pCurrChar;
+    return JPE_NO_ERROR;
 }
 
-const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseArray(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     if( *pCurrChar != '[' ) { 
-        if( pEnd ) { *pEnd = pCurrChar; }
-        return (const char *)0; 
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
     }
     pCurrChar++;
 
@@ -348,10 +357,10 @@ const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pEleme
     while( isspace(*pCurrChar) ) { pCurrChar++; }
     if( *pCurrChar == ']' ) {
         // Empty Array
-        if( pEnd ) { *pEnd = pCurrChar + 1; }
+        *ppEnd = pCurrChar + 1;
         pElement->type = TYPE_ARRAY;
         pElement->arrayValue = (ArrayNode *)0;
-        return pCurrChar + 1;
+        return JPE_NO_ERROR;
     }
 
     // Prasing Array
@@ -359,15 +368,14 @@ const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pEleme
         // Allocate Element
         ArrayNode *pNode = (ArrayNode *)calloc( 1, sizeof(ArrayNode) );
         if( !pNode ) {
-            fprintf(stderr, "Critical Error: Memory Allocation Failed: ArrayNode\n");
             if( pHead ) { // Release
                 Element e = { .type = TYPE_ARRAY, .arrayValue = pHead };
                 resetElement(&e);
             }
-            if( pEnd ) { *pEnd = pCurrChar; }
-            return (const char *)0;
+            *ppEnd = pCurrChar;
+            return JPE_OUT_OF_MEMORY;
         }
-        else {
+        else { // Append Node
             if( pTail ) {
                 pTail->next = pNode;
                 pTail = pNode;
@@ -379,14 +387,14 @@ const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pEleme
         }
 
         // Parse Value Here!!
-        const char *ret = parseValue( pCurrChar, &ptrEnd, &(pNode->element) );
-        if( !ret ) {
+        JsonParsingError ret = parseValue( pCurrChar, &ptrEnd, &(pNode->element) );
+        if( ret != JPE_NO_ERROR ) {
             if( pHead ) { // Release
                 Element e = { .type = TYPE_ARRAY, .arrayValue = pHead };
                 resetElement(&e);
             }
-            if( pEnd ) { *pEnd = ptrEnd; }
-            return (const char *)0;
+            *ppEnd = ptrEnd;
+            return (ret == JPE_SYNTAX_ERROR_END) ? ret : JPE_SYNTAX_ERROR_ARRAY;
         }
         pCurrChar = ptrEnd;
 
@@ -403,34 +411,30 @@ const char *parseArray(const char *pCurrChar, const char **pEnd, Element *pEleme
             break;
         }
         else {
-            fprintf(stderr, "Array Parsing Error: Unexpected Token Character: %c...\n", *pCurrChar );
-            if( pEnd ) { *pEnd = pCurrChar; }
-            return (const char*)0;
+            *ppEnd = pCurrChar;
+            return (*pCurrChar == '\0') ? JPE_SYNTAX_ERROR_END : JPE_SYNTAX_ERROR_ARRAY_COMMA;
         }
     }
 
     pElement->type = TYPE_ARRAY;
     pElement->arrayValue = pHead;
-    if( pEnd ) { *pEnd = pCurrChar; }
+    *ppEnd = pCurrChar;
 
-    return pCurrChar;
+    return JPE_NO_ERROR;
 }
 
-const char *parseString(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseString(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
-    const char *ptrEnd = (const char *)0;
-    char *stringValue = _getString( pCurrChar, &ptrEnd );
-
-    if( !stringValue ) { return (const char *)0; }
-
-    pElement->type = TYPE_STRING;
-    pElement->stringValue = stringValue;
-
-    if( pEnd ) { *pEnd = ptrEnd; }
-    return ptrEnd;
+    char *stringValue = (char *)0; 
+    JsonParsingError ret = _getString( &stringValue, pCurrChar, ppEnd );
+    if( ret == JPE_NO_ERROR ) {
+        pElement->type = TYPE_STRING;
+        pElement->stringValue = stringValue;
+    }
+    return ret;
 }
 
-const char *parseNumber(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseNumber(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     // Check Octal, Hex, Decimal or Floating Point Number
     char *ptrEnd = (char *)0;
@@ -452,46 +456,46 @@ const char *parseNumber(const char *pCurrChar, const char **pEnd, Element *pElem
             pElement->dNumberValue = val;
         }
     }
-    else {
-        fprintf(stderr, "Unexpected Token Character: %c%c...\n", *pCurrChar, *(pCurrChar+1) );
+
+    if( !ptrEnd ) {
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
     }
 
-    if( pEnd ) { *pEnd = ptrEnd ? ptrEnd : pCurrChar; }
-    return (const char *)ptrEnd;
+    *ppEnd = ptrEnd;
+    return JPE_NO_ERROR;
 }
 
-const char *parseBoolean(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseBoolean(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     if( *pCurrChar == 't' && !strncmp( pCurrChar, "true", 4 ) ) {
         pElement->type = TYPE_BOOLEAN;
         pElement->iNumberValue = 1;
-        if( pEnd ) { *pEnd = pCurrChar + 4; }
-        return pCurrChar + 4;
+        *ppEnd = pCurrChar + 4;
+        return JPE_NO_ERROR;
     }
     else if( *pCurrChar == 'f' && !strncmp( pCurrChar, "false", 5 ) ) {
         pElement->type = TYPE_BOOLEAN;
         pElement->iNumberValue = 0;
-        if( pEnd ) { *pEnd = pCurrChar + 5; }
-        return pCurrChar + 5;
+        *ppEnd = pCurrChar + 5;
+        return JPE_NO_ERROR;
     }
-    // else
-    fprintf(stderr, "Unexpected Token Character: %c%c...\n", *pCurrChar, *(pCurrChar+1) );
-    if( pEnd ) { *pEnd = pCurrChar; }
-    return (const char *)0;
+    
+    *ppEnd = pCurrChar;
+    return JPE_SYNTAX_ERROR;
 }
 
-const char *parseNull(const char *pCurrChar, const char **pEnd, Element *pElement)
+JsonParsingError parseNull(const char *pCurrChar, const char **ppEnd, Element *pElement)
 {
     if( !strncmp( pCurrChar, "null", 4 ) ) {
         pElement->type = TYPE_NULL;
         pElement->iNumberValue = 0;
-        if( pEnd ) { *pEnd = pCurrChar + 4; }
-        return pCurrChar + 4;
+        *ppEnd = pCurrChar + 4;
+        return JPE_NO_ERROR;
     }
-    // else
-    fprintf(stderr, "Unexpected Token Character: %c%c...\n", *pCurrChar, *(pCurrChar+1) );
-    if( pEnd ) { *pEnd = pCurrChar; }
-    return (const char *)0;
+    
+    *ppEnd = pCurrChar;
+    return JPE_SYNTAX_ERROR;
 }
 
 
@@ -711,4 +715,55 @@ static void _printElementDepthAllImpl(const Element *pElement, int padding)
 void printElementDepthAll(const Element *pElement) {
     _printElementDepthAllImpl(pElement, 0);
     putc('\n', stdout);
+}
+
+void printJsonErrorInfo(const JsonErrorInfo* pInfo, const char *jsonStr)
+{
+    if( pInfo ) {
+        const char *errMsg = (const char *)0;
+        switch(pInfo->error)
+        {
+            case JPE_OUT_OF_MEMORY:
+                fprintf(stderr, "Critical Error: Out of memory...\n");
+                return;
+
+            case JPE_NO_ERROR:
+                fprintf(stderr, "No Error...\n");
+                return;
+            
+            case JPE_SYNTAX_ERROR:
+                fprintf(stderr, "Unexpected token '%c' in JSON at position %d\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_END:
+                fprintf(stderr, "Unexpected end of JSON input\n");
+                return;
+            case JPE_SYNTAX_ERROR_STRING_ESCAPE:
+                fprintf(stderr, "Unexpected control character '%c' after '\\' at position %d\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_UNICODE_ESCAPE:
+                fprintf(stderr, "Unexpected unicode 4 hex digits (+U%c%c%c%c) at position %d\n", jsonStr[pInfo->position + 1], jsonStr[pInfo->position + 2], jsonStr[pInfo->position + 3], jsonStr[pInfo->position + 4], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_ARRAY:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing array) at position %d\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_ARRAY_COMMA:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing array) at position %d: ',' is expected\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_OBJECT:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing object) at position %d\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_OBJECT_KEY:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing object) at position %d: `string` for `key` is expected\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_OBJECT_COLON:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing object) at position %d: ':' is expected\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            case JPE_SYNTAX_ERROR_OBJECT_COMMA:
+                fprintf(stderr, "Unexpected token '%c' in JSON (while parsing object) at position %d: ',' is expected\n", jsonStr[pInfo->position], pInfo->position);
+                break;
+            default:
+                return;
+        }   
+        fprintf(stderr, "    at Ln %d, Col %d\n", pInfo->line, pInfo->column);
+    }
 }
