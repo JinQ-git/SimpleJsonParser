@@ -1,5 +1,5 @@
-#ifndef _JSON_ELEMENT_H_
-#define _JSON_ELEMENT_H_
+#ifndef _JSON_PARSER_H_
+#define _JSON_PARSER_H_
 
 #include <stdint.h>
 
@@ -95,4 +95,4 @@ void printElementDepthAll(const Element *pElement);
 //
 void printJsonErrorInfo(const JsonErrorInfo* pInfo, const char *jsonStr);
 
-#endif // _JSON_ELEMENT_H_
+#endif // _JSON_PARSER_H_
