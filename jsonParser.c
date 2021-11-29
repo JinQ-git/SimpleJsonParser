@@ -217,6 +217,9 @@ JsonParsingError parseValue(const char *pCurrChar, const char **ppEnd, Element *
         case '7':
         case '8':
         case '9': 
+    #if _ALLOW_LOOSEN_NUMBER_FORMAT_ // allow floating point, skipping leading zero (ex> .12)
+        case '.':
+    #endif
             return parseNumber( pCurrChar, ppEnd, pElement );
         // Try parse as Boolean
         case 't':
@@ -441,11 +444,20 @@ JsonParsingError parseNumber(const char *pCurrChar, const char **ppEnd, Element 
     const char *pTmp = pCurrChar;
 
     if( *pTmp == '+' || *pTmp == '-' ) { ++pTmp; }
-    if( pTmp[0] == '0' && (pTmp[1] == 'x' || isdigit(pTmp[1])) ) { // Octal || Hex
-        pElement->type = TYPE_INT_NUMBER;
-        pElement->iNumberValue = (int64_t)strtoll(pCurrChar, &ptrEnd, 0);
+#if _ALLOW_LOOSEN_NUMBER_FORMAT_ // allow hex, octal, c-style floating point
+    if( !isdigit(*pTmp) || *pTmp != '.' ) {
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
     }
-    else if( isdigit(pTmp[0]) ) { // 48 < firstChar && firstChar < 58
+
+    if( pTmp[0] == '0' ) {
+        if( pTmp[1] == 'x' || pTmp[1] == 'X' || isdigit(pTmp[1]) ) { // Hex or Octal
+            pElement->type = TYPE_INT_NUMBER;
+            pElement->iNumberValue = (int64_t)strtoll(pCurrChar, &ptrEnd, 0);
+        }
+    }
+
+    if( !ptrEnd ) {
         double val = strtod( pCurrChar, &ptrEnd );
         if( fabs( ceil(val) - val ) <= DBL_EPSILON ) {
             pElement->type = TYPE_INT_NUMBER;
@@ -456,6 +468,31 @@ JsonParsingError parseNumber(const char *pCurrChar, const char **ppEnd, Element 
             pElement->dNumberValue = val;
         }
     }
+
+#else
+    if( !isdigit(*pTmp) ) {
+        *ppEnd = pCurrChar;
+        return JPE_SYNTAX_ERROR;
+    }
+    
+    if( pTmp[0] == '0' ) {
+        // NOTE: strtod() function can parse hex string (e.g. 0x12)
+        if( pTmp[1] == 'x' || pTmp[1] == 'X' || isdigit(pTmp[1]) ) { // Hex or Octal
+            *ppEnd = pCurrChar;
+            return JPE_SYNTAX_ERROR;
+        }
+    }
+
+    double val = strtod( pCurrChar, &ptrEnd );
+    if( fabs( ceil(val) - val ) <= DBL_EPSILON ) {
+        pElement->type = TYPE_INT_NUMBER;
+        pElement->iNumberValue = (int64_t)val;
+    }
+    else {
+        pElement->type = TYPE_DBL_NUMBER;
+        pElement->dNumberValue = val;
+    }
+#endif
 
     if( !ptrEnd ) {
         *ppEnd = pCurrChar;
